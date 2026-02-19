@@ -1,0 +1,100 @@
+# ─────────────────────────────────────────────
+# Python
+# ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Pip / Poetry
+pip-log.txt
+pip-delete-this-directory.txt
+poetry.lock
+Pipfile.lock
+
+# ─────────────────────────────────────────────
+# Environment Variables (SENSITIVE)
+# ─────────────────────────────────────────────
+.env
+.env.*
+*.env
+.env.local
+
+.adk
+file.py
+all_python_code.txt
+
+extra/
+
+
+# OCI / Cloud credentials
+oci_config
+config
+config_kaiser
+
+*.pem
+*.key
+*.crt
+
+# Google credentials
+service-account.json
+credentials.json
+
+# ─────────────────────────────────────────────
+# Logs
+# ─────────────────────────────────────────────
+*.log
+logs/
+*.out
+
+# ─────────────────────────────────────────────
+# IDE / Editor
+# ─────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─────────────────────────────────────────────
+# OS
+# ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─────────────────────────────────────────────
+# Build / Distribution
+# ─────────────────────────────────────────────
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ─────────────────────────────────────────────
+# Test / Coverage
+# ─────────────────────────────────────────────
+.coverage
+htmlcov/
+.pytest_cache/
+
+# ─────────────────────────────────────────────
+# Local runtime artifacts
+# ─────────────────────────────────────────────
+*.sqlite3
+*.db
+
+# ─────────────────────────────────────────────
+# Docker
+# ─────────────────────────────────────────────
+docker-compose.override.yml
+
+# ─────────────────────────────────────────────
+# A2A / Gateway Runtime Temp
+# ─────────────────────────────────────────────
+*.jsonrpc
+*.session
+*.cache

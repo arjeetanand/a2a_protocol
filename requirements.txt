@@ -1,0 +1,16 @@
+
+fastapi 
+pydantic
+
+google-adk 
+a2a-sdk 
+uvicorn 
+httpx 
+python-dotenv 
+rich
+autogen-agentchat 
+autogen-ext 
+langchain-core 
+langgraph
+oci 
+litellm
