@@ -22,7 +22,7 @@ from google.adk.tools import AgentTool
 from google.adk.runners import Runner
 
 #    (folder was renamed to avoid shadowing the autogen-agentchat package)
-from budget_agent.agent import autogen_budget_tool
+# from budget_agent.old_autogen_agent import autogen_budget_tool
 
 # Import everything needed from travel_agent
 from travel_agent.agent import (
@@ -47,9 +47,6 @@ root_agent = Agent(
     name="supervisor_agent",
     model=oci_model,
     instruction="""You are a unified AI supervisor. Route every task to exactly one tool:
-
-    - Budget / cost estimation  → autogen_budget_tool
-      (sends task to AutoGen: Cost_Estimator → Budget_Analyst)
 
     - Flight or hotel search                   → langgraph_travel_tool
       (sends query to LangGraph travel graph)

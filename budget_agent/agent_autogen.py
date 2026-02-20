@@ -99,6 +99,7 @@ class BudgetAgentExecutor(AgentExecutor):
         await event_queue.enqueue_event(
             new_agent_text_message("Budget request cancelled.")
         )
+
 # ─────────────────────────────────────────────────────────────
 # Server Bootstrap
 # ─────────────────────────────────────────────────────────────

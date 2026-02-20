@@ -1,20 +1,14 @@
-
 """
 gateway/a2a_gateway_server.py
 
-A2A Gateway — written ONCE, never touched again.
+SMART A2A Gateway — LLM-based semantic routing.
 
-To add a new agent:
-  1. Start your new agent on some port (e.g. 8892)
-  2. Add an entry to gateway/agent_registry.json
-  3. That's it. No code changes needed here.
+- Discovers agents via AgentCard (GET /)
+- Uses LLM to decide which agent(s) should handle a query
+- Calls selected agents in parallel
+- Merges responses
 
-Key feature: MULTI-AGENT FAN-OUT
-  If a query matches multiple agents (e.g. travel + finance),
-  all matching agents are called IN PARALLEL and their responses
-  are merged into one structured reply.
-
-Run with:
+Run:
     python gateway/a2a_gateway_server.py
 """
 
@@ -22,6 +16,7 @@ import asyncio
 import json
 import os
 import time
+from typing import List, Dict
 
 import httpx
 import uvicorn
@@ -29,9 +24,7 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 from rich import box
-from rich.rule import Rule
 
 from a2a.client import Client, ClientConfig, ClientFactory, create_text_message_object
 from a2a.server.agent_execution import AgentExecutor, RequestContext
@@ -39,235 +32,193 @@ from a2a.server.apps import A2AStarletteApplication
 from a2a.server.events import EventQueue
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
-from a2a.types import AgentCard, AgentCapabilities, AgentSkill, Artifact, Message, Task
+from a2a.types import AgentCard, AgentCapabilities
 from a2a.utils import new_agent_text_message
+from a2a.types import Artifact, Message, Task
 from a2a.utils.message import get_message_text
+
+from google.adk.agents import Agent
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+from google.genai import types as genai_types
+
+
+from shared.utils import build_oci_model
 
 load_dotenv()
 
+oci_model = build_oci_model()
+
 console = Console()
 
-REGISTRY_PATH = os.path.join(os.path.dirname(__file__), "agent_registry.json")
-TIMEOUT_SECS  = float(os.environ.get("AGENT_TIMEOUT_SECS", 600))
+TIMEOUT_SECS = float(os.environ.get("AGENT_TIMEOUT_SECS", 600))
 
-AGENT_ICONS = {
-    "travel":    "✈️ ",
-    "finance":   "💰",
-    "analytics": "📊",
-    "budget":    "💸",
-    "weather":   "🌤️ ",
-}
+# 👉 Add agents here (no keywords needed)
+AGENT_URLS = [
+    "http://localhost:8890",  # finance
+    "http://localhost:8891",  # analytics
+    "http://localhost:8892",  # budget
+    "http://localhost:8888",  # supervisor/travel
+]
 
-AGENT_COLORS = {
-    "travel":    "cyan",
-    "finance":   "green",
-    "analytics": "magenta",
-    "budget":    "yellow",
-    "weather":   "blue",
-}
-
-SECTION_ICONS = {
-    "travel":    "✈️  Travel",
-    "finance":   "💰 Finance",
-    "analytics": "📊 Analytics",
-    "budget":    "💰 Budget",
-    "weather":   "🌤️  Weather",
-}
-
-_request_counter = 0  # global request counter
+_request_counter = 0
 
 
-# ── Registry helpers ───────────────────────────────────────────────────────────
-def _load_registry() -> dict:
-    """Reload from disk every request so edits are picked up live."""
-    with open(REGISTRY_PATH, "r") as f:
-        return json.load(f)
+# ─────────────────────────────────────────────────────────────
+# 1️⃣ Agent Discovery
+# ─────────────────────────────────────────────────────────────
+
+# async def fetch_agent_card(url: str) -> Dict:
+#     async with httpx.AsyncClient() as client:
+#         res = await client.get(url)
+#         return res.json()
+
+async def fetch_agent_card(url: str) -> Dict:
+    async with httpx.AsyncClient() as client:
+        res = await client.get(f"{url}/.well-known/agent-card.json")
+        res.raise_for_status()
+        return res.json()
 
 
-# def _match_agents(query: str) -> list[tuple[str, str, list[str]]]:
-#     """
-#     Return ALL agents whose keywords appear in the query.
-#     Returns list of (agent_name, url, matched_keywords) tuples — deduped by URL.
-#     """
-#     query_lower = query.lower()
-#     matched: list[tuple[str, str, list[str]]] = []
-#     seen_urls: set[str] = set()
-
-#     for agent_name, config in _load_registry().items():
-#         hit_keywords = [kw for kw in config["keywords"] if kw in query_lower]
-#         if hit_keywords and config["url"] not in seen_urls:
-#             matched.append((agent_name, config["url"], hit_keywords))
-#             seen_urls.add(config["url"])
-
-#     return matched
-
-import re
-
-def _match_agents(query: str) -> list[tuple[str, str, list[str]]]:
-    query_lower = query.lower()
-    matched = []
-    seen_urls = set()
-
-    for agent_name, config in _load_registry().items():
-        hit_keywords = []
-
-        for kw in config["keywords"]:
-            pattern = r"\b" + re.escape(kw.lower()) + r"\b"
-            if re.search(pattern, query_lower):
-                hit_keywords.append(kw)
-
-        if hit_keywords and config["url"] not in seen_urls:
-            matched.append((agent_name, config["url"], hit_keywords))
-            seen_urls.add(config["url"])
-
-    return matched
+async def discover_agents() -> List[Dict]:
+    agents = []
+    for url in AGENT_URLS:
+        try:
+            card = await fetch_agent_card(url)
+            agents.append({
+                "name": card["name"],
+                "url": url,
+                "description": card.get("description", ""),
+                "skills": card.get("skills", []),
+            })
+        except Exception as e:
+            console.print(f"[red]Failed to fetch AgentCard from {url}: {e}[/red]")
+    return agents
 
 
-# ── Logging helpers ────────────────────────────────────────────────────────────
-def _log_incoming_request(request_id: int, query: str) -> None:
-    console.print()
-    console.rule(f"[bold white]⚡ REQUEST #{request_id}[/bold white]", style="bold blue")
-    console.print(
-        Panel(
-            f"[bold yellow]{query}[/bold yellow]",
-            title="[bold white]📥 Incoming Query[/bold white]",
-            border_style="blue",
-            padding=(0, 2),
-        )
+# ─────────────────────────────────────────────────────────────
+# 2️⃣ LLM Routing Decision
+# ─────────────────────────────────────────────────────────────
+
+def build_routing_prompt(query: str, agents: List[Dict]) -> str:
+        agent_descriptions = "\n\n".join([
+            f"Agent: {a['name']}\n"
+            f"Description: {a['description']}\n"
+            f"Skills: {', '.join(s.get('name', '') for s in a['skills'])}"
+            for a in agents
+        ])
+
+        return f"""
+    You are a routing AI.
+
+    Available agents:
+
+    {agent_descriptions}
+
+    User query:
+    "{query}"
+
+    Return a JSON array of agent names that should handle this query.
+    If multiple agents are relevant, return multiple.
+    Return ONLY valid JSON.
+    """
+
+
+async def decide_agents(query: str, agents: List[Dict]) -> List[str]:
+    """
+    Uses ADK Runner to execute router_agent properly.
+    """
+
+    prompt = build_routing_prompt(query, agents)
+
+    # Create session
+    session = await router_session_service.create_session(
+        app_name="router_app",
+        user_id="router_user",
     )
 
-
-def _log_routing_table(
-    request_id: int,
-    query: str,
-    matched: list[tuple[str, str, list[str]]],
-) -> None:
-    table = Table(
-        title=f"[bold white]🔀 Routing Decision — Request #{request_id}[/bold white]",
-        box=box.ROUNDED,
-        border_style="bright_blue",
-        show_lines=True,
-        padding=(0, 1),
-    )
-    table.add_column("Agent",           style="bold", width=14)
-    table.add_column("URL",             style="dim cyan", width=30)
-    table.add_column("Matched Keywords", style="bold yellow")
-
-    for agent_name, url, kws in matched:
-        color = AGENT_COLORS.get(agent_name, "white")
-        icon  = AGENT_ICONS.get(agent_name, "🤖")
-        kw_highlights = ", ".join(
-            f"[bold green underline]{kw}[/bold green underline]" for kw in kws
-        )
-        table.add_row(
-            f"[{color}]{icon} {agent_name.upper()}[/{color}]",
-            url,
-            kw_highlights,
-        )
-
-    console.print(table)
-
-
-def _log_no_match(query: str) -> None:
-    console.print(
-        Panel(
-            f"[red]No agent matched for:[/red]\n[yellow]{query}[/yellow]\n\n"
-            "[dim]Tip: Add keywords to gateway/agent_registry.json[/dim]",
-            title="[bold red]❌ No Match[/bold red]",
-            border_style="red",
-        )
+    user_content = genai_types.Content(
+        role="user",
+        parts=[genai_types.Part(text=prompt)],
     )
 
+    final_text = ""
 
-def _log_agent_start(agent_name: str, url: str) -> None:
-    color = AGENT_COLORS.get(agent_name, "white")
-    icon  = AGENT_ICONS.get(agent_name, "🤖")
-    console.print(
-        f"  [dim]⏳ Calling[/dim] [{color}]{icon} {agent_name.upper()}[/{color}]"
-        f" [dim]→[/dim] [cyan]{url}[/cyan] [dim]...[/dim]"
-    )
+    async for event in router_runner.run_async(
+        user_id="router_user",
+        session_id=session.id,
+        new_message=user_content,
+    ):
+        if event.is_final_response():
+            if event.content and event.content.parts:
+                final_text = "".join(
+                    part.text
+                    for part in event.content.parts
+                    if hasattr(part, "text") and part.text
+                )
+            break
 
+    try:
+        selected = json.loads(final_text.strip())
+        if isinstance(selected, list):
+            return selected
+    except Exception:
+        console.print("[red]Router returned invalid JSON.[/red]")
 
-def _log_agent_result(
-    agent_name: str,
-    url: str,
-    response_text: str,
-    elapsed: float,
-    success: bool = True,
-) -> None:
-    color  = AGENT_COLORS.get(agent_name, "white")
-    icon   = AGENT_ICONS.get(agent_name, "🤖")
-    status = "[bold green]✅ SUCCESS[/bold green]" if success else "[bold red]❌ ERROR[/bold red]"
+    return []
 
-    # Truncate long responses for console readability
-    preview = response_text.strip().replace("\n", " ")
-    if len(preview) > 200:
-        preview = preview[:200] + "…"
+# ─────────────────────────────────────────────
+# Router Agent (ADK Native)
+# ─────────────────────────────────────────────
 
-    console.print(
-        Panel(
-            f"{status}  [dim]({elapsed:.2f}s)[/dim]\n\n"
-            f"[bold]Agent:[/bold] [{color}]{icon} {agent_name.upper()}[/{color}]\n"
-            f"[bold]URL:  [/bold] [cyan]{url}[/cyan]\n\n"
-            f"[bold]Response Preview:[/bold]\n[italic dim]{preview}[/italic dim]",
-            title=f"[{color}]{icon} {agent_name.capitalize()} Response[/{color}]",
-            border_style=color,
-            padding=(0, 2),
-        )
-    )
+router_agent = Agent(
+    name="router_agent",
+    model=oci_model,
+    instruction="""
+You are a routing AI.
 
+Given:
+- A list of available agents (name + description + skills)
+- A user query
 
-def _log_fanout_summary(
-    request_id: int,
-    results: list[tuple[str, str]],
-    total_elapsed: float,
-) -> None:
-    table = Table(
-        title=f"[bold white]📦 Fan-Out Summary — Request #{request_id}[/bold white]",
-        box=box.SIMPLE_HEAD,
-        border_style="bright_green",
-        padding=(0, 1),
-    )
-    table.add_column("Agent",   style="bold", width=14)
-    table.add_column("Status",  width=12)
-    table.add_column("Response Length", justify="right")
+Return ONLY a JSON array of agent names that should handle the query.
 
-    for agent_name, response_text in results:
-        color   = AGENT_COLORS.get(agent_name, "white")
-        icon    = AGENT_ICONS.get(agent_name, "🤖")
-        is_err  = response_text.startswith(f"[{agent_name}] error")
-        status  = "[red]❌ Error[/red]" if is_err else "[green]✅ OK[/green]"
-        length  = f"{len(response_text):,} chars"
-        table.add_row(
-            f"[{color}]{icon} {agent_name.upper()}[/{color}]",
-            status,
-            f"[dim]{length}[/dim]",
-        )
+Rules:
+- Return valid JSON only.
+- No explanations.
+- If multiple agents are relevant, include all.
+- If none match, return an empty JSON array [].
+"""
+)
 
-    console.print(table)
-    console.print(
-        f"  [bold green]⚡ Total time:[/bold green] [yellow]{total_elapsed:.2f}s[/yellow]"
-        f"  [dim]|[/dim]  [bold]Agents called:[/bold] [cyan]{len(results)}[/cyan]"
-    )
-    console.print()
+router_session_service = InMemorySessionService()
+
+router_runner = Runner(
+    agent=router_agent,
+    app_name="router_app",
+    session_service=router_session_service,
+)
 
 
-# ── Single downstream call ─────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# 3️⃣ Downstream A2A Call
+# ─────────────────────────────────────────────────────────────
+
 async def _call_one_agent(
     agent_name: str,
     url: str,
     query: str,
     httpx_client: httpx.AsyncClient,
-) -> tuple[str, str, float]:
-    """Call one downstream A2A agent and return (agent_name, response_text, elapsed_secs)."""
-    _log_agent_start(agent_name, url)
+):
     t0 = time.monotonic()
+
     try:
         client: Client = await ClientFactory.connect(
             url,
             client_config=ClientConfig(httpx_client=httpx_client),
         )
-        message   = create_text_message_object(content=query)
+
+        message = create_text_message_object(content=query)
         responses = client.send_message(message)
 
         text_content = ""
@@ -281,42 +232,53 @@ async def _call_one_agent(
                     text_content = get_message_text(artifact)
 
         elapsed = time.monotonic() - t0
-        text_content = text_content or f"[{agent_name}] returned no response."
-        _log_agent_result(agent_name, url, text_content, elapsed, success=True)
         return agent_name, text_content, elapsed
 
     except Exception as e:
         elapsed = time.monotonic() - t0
-        err_text = f"[{agent_name}] error: {e}"
-        _log_agent_result(agent_name, url, err_text, elapsed, success=False)
-        return agent_name, err_text, elapsed
+        return agent_name, f"[ERROR] {str(e)}", elapsed
 
 
-# ── Gateway Executor ───────────────────────────────────────────────────────────
-class GatewayExecutor(AgentExecutor):
+# ─────────────────────────────────────────────────────────────
+# 4️⃣ Gateway Executor
+# ─────────────────────────────────────────────────────────────
 
-    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+class SmartGatewayExecutor(AgentExecutor):
+
+    async def execute(self, context: RequestContext, event_queue: EventQueue):
         global _request_counter
         _request_counter += 1
         req_id = _request_counter
 
-        query   = context.get_user_input()
-        matched = _match_agents(query)  # now returns (name, url, [keywords])
+        query = context.get_user_input()
 
-        _log_incoming_request(req_id, query)
+        console.print()
+        console.rule(f"[bold blue]⚡ REQUEST #{req_id}[/bold blue]")
+        console.print(Panel(query, title="Incoming Query"))
 
-        # ── No agent matched ────────────────────────────────────────────────
-        if not matched:
-            _log_no_match(query)
+        agents = await discover_agents()
+
+        if not agents:
             await event_queue.enqueue_event(
-                new_agent_text_message(
-                    "No registered agent matched this request. "
-                    "Add the relevant keywords to gateway/agent_registry.json."
-                )
+                new_agent_text_message("No agents available.")
             )
             return
 
-        _log_routing_table(req_id, query, matched)
+        selected_names = await decide_agents(query, agents)
+
+        selected_agents = [
+            a for a in agents if a["name"] in selected_names
+        ]
+
+        if not selected_agents:
+            await event_queue.enqueue_event(
+                new_agent_text_message("LLM could not determine a suitable agent.")
+            )
+            return
+
+        console.print(
+            f"[green]LLM selected:[/green] {', '.join(selected_names)}"
+        )
 
         httpx_timeout = httpx.Timeout(
             connect=10.0,
@@ -325,123 +287,79 @@ class GatewayExecutor(AgentExecutor):
             pool=10.0,
         )
 
-        # ── Fan-out: call ALL matched agents in parallel ─────────────────
-        t_start = time.monotonic()
         async with httpx.AsyncClient(timeout=httpx_timeout) as httpx_client:
             tasks = [
-                _call_one_agent(name, url, query, httpx_client)
-                for name, url, _ in matched
+                _call_one_agent(a["name"], a["url"], query, httpx_client)
+                for a in selected_agents
             ]
-            raw_results: list[tuple[str, str, float]] = await asyncio.gather(*tasks , return_exceptions=True)
+            raw_results = await asyncio.gather(*tasks)
 
-        total_elapsed = time.monotonic() - t_start
-        results: list[tuple[str, str]] = [(n, t) for n, t, _ in raw_results]
+            console.print("\n[bold cyan]🔎 Downstream Agent Responses[/bold cyan]\n")
 
-        _log_fanout_summary(req_id, results, total_elapsed)
+            for agent_name, text, elapsed in raw_results:
+                console.print(Panel(
+                    text,
+                    title=f"{agent_name} ({elapsed:.2f}s)",
+                    border_style="cyan"
+                ))
 
-        # ── Merge responses ────────────────────────────────────────────────
-        routing_header = (
-            "> 🔀 **Gateway routed to:** "
-            + ", ".join(f"`{n}` → {u}" for n, u, _ in matched)
+        # Merge responses
+        sections = []
+        for agent_name, text, elapsed in raw_results:
+            sections.append(
+                f"## {agent_name}\n\n{text}\n\n⏱ {elapsed:.2f}s"
+            )
+
+        final_text = "\n\n---\n\n".join(sections)
+
+        await event_queue.enqueue_event(
+            new_agent_text_message(final_text)
         )
 
-        if len(results) == 1:
-            agent_name, text = results[0]
-            url = matched[0][1]
-            final_text = f"> 🔀 **Gateway routed to:** `{agent_name}` → {url}\n\n{text}"
-        else:
-            sections = [routing_header]
-            for agent_name, text in results:
-                icon = SECTION_ICONS.get(agent_name, f"🤖 {agent_name.capitalize()}")
-                sections.append(f"## {icon}\n\n{text}")
-            final_text = "\n\n---\n\n".join(sections)
-
-        await event_queue.enqueue_event(new_agent_text_message(final_text))
-
-    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
+    async def cancel(self, context: RequestContext, event_queue: EventQueue):
         pass
 
 
-# ── Server setup ───────────────────────────────────────────────────────────────
-def main() -> None:
+# ─────────────────────────────────────────────────────────────
+# 5️⃣ Server Bootstrap
+# ─────────────────────────────────────────────────────────────
+
+def main():
     HOST = os.environ.get("GATEWAY_HOST", "localhost")
     PORT = int(os.environ.get("GATEWAY_PORT", 9000))
 
-    skills = []
-    try:
-        for agent_name, config in _load_registry().items():
-            skills.append(
-                AgentSkill(
-                    id=agent_name,
-                    name=agent_name.capitalize(),
-                    description=f"Routes to {config['url']}",
-                    tags=config["keywords"],
-                    examples=[f"Example: {config['keywords'][0]} related query"],
-                )
-            )
-    except Exception:
-        pass
-
     agent_card = AgentCard(
-        name="A2AGateway",
+        name="SmartA2AGateway",
         description=(
-            "Central A2A gateway with multi-agent fan-out. "
-            "Routes queries to ALL matching downstream agents in parallel "
-            "and merges their responses. Edit agent_registry.json to add agents."
+            "LLM-powered semantic A2A router. "
+            "Discovers agents via AgentCard and routes dynamically."
         ),
         url=f"http://{HOST}:{PORT}/",
-        version="2.0.0",
+        version="3.0.0",
         default_input_modes=["text"],
         default_output_modes=["text"],
         capabilities=AgentCapabilities(streaming=False),
-        skills=skills,
+        skills=[],
     )
 
     request_handler = DefaultRequestHandler(
-        agent_executor=GatewayExecutor(),
+        agent_executor=SmartGatewayExecutor(),
         task_store=InMemoryTaskStore(),
     )
+
     server = A2AStarletteApplication(
         agent_card=agent_card,
         http_handler=request_handler,
     )
 
-    # ── Startup Banner ─────────────────────────────────────────────────────
-    console.print()
-    console.print(Panel(
-        f"[bold green]🚀 A2A Gateway (fan-out) running at http://{HOST}:{PORT}[/bold green]\n"
-        f"[dim]📋 Registry: {REGISTRY_PATH}[/dim]",
-        title="[bold white]A2A GATEWAY[/bold white]",
-        border_style="bright_green",
-        padding=(1, 4),
-    ))
-
-    # ── Agent Registry Table ───────────────────────────────────────────────
-    try:
-        reg_table = Table(
-            title="[bold white]📋 Registered Agents[/bold white]",
-            box=box.ROUNDED,
-            border_style="bright_blue",
-            show_lines=True,
-            padding=(0, 1),
+    console.print(
+        Panel(
+            f"🚀 Smart A2A Gateway running at http://{HOST}:{PORT}",
+            title="SMART LLM ROUTER",
+            border_style="green",
         )
-        reg_table.add_column("Agent",    style="bold", width=14)
-        reg_table.add_column("URL",      style="cyan", width=30)
-        reg_table.add_column("Keywords", style="yellow")
+    )
 
-        for name, cfg in _load_registry().items():
-            color = AGENT_COLORS.get(name, "white")
-            icon  = AGENT_ICONS.get(name, "🤖")
-            reg_table.add_row(
-                f"[{color}]{icon} {name.upper()}[/{color}]",
-                cfg["url"],
-                ", ".join(cfg["keywords"]),
-            )
-        console.print(reg_table)
-    except Exception as e:
-        console.print(f"[red]Could not load registry: {e}[/red]")
-
-    console.print()
     uvicorn.run(server.build(), host=HOST, port=PORT)
 
 

@@ -14,3 +14,4 @@ langchain-core
 langgraph
 oci 
 litellm
+agent-framework --pre

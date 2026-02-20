@@ -18,6 +18,7 @@ def build_oci_model() -> LiteLlm:
     """Build a shared OCI LiteLlm instance from environment variables."""
     return LiteLlm(
         model="oci/xai.grok-4",
+        max_tokens=1500,   # 👈 ADD THIS
         oci_region=require_env("OCI_REGION"),
         oci_user=require_env("OCI_USER"),
         oci_fingerprint=require_env("OCI_FINGERPRINT"),

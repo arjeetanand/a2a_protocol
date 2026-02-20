@@ -30,6 +30,8 @@ file.py
 all_python_code.txt
 
 extra/
+maf/
+run_scripts.txt
 
 
 # OCI / Cloud credentials
