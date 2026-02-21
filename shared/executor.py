@@ -7,6 +7,7 @@ from google.adk.sessions import InMemorySessionService
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.utils import new_agent_text_message
+from google.genai import types as genai_types
 
 FALLBACK_MSG = "The agent did not return a response."
 
@@ -25,7 +26,6 @@ class BaseADKExecutor(AgentExecutor):
         )
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        from google.genai import types as genai_types
 
         prompt = context.get_user_input()
         session = await self.session_service.create_session(

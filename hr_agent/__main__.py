@@ -1,4 +1,4 @@
-from analytics_agent.agent import main
+from hr_agent.agent import main
 
 if __name__ == "__main__":
     main()

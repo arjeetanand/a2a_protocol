@@ -5,25 +5,6 @@ Finance Agent — handles budget analysis, cost estimation, ROI, expenses.
 Runs as an A2A server on port 8890.
 """
 
-# import os
-# import uvicorn
-# from dotenv import load_dotenv
-
-# from a2a.server.agent_execution import AgentExecutor, RequestContext
-# from a2a.server.apps import A2AStarletteApplication
-# from a2a.server.events import EventQueue
-# from a2a.server.request_handlers import DefaultRequestHandler
-# from a2a.server.tasks import InMemoryTaskStore
-# from a2a.types import AgentCapabilities, AgentCard, AgentSkill
-# from a2a.utils import new_agent_text_message
-
-# from google.adk.agents import Agent
-# from google.adk.models.lite_llm import LiteLlm
-# from google.adk.runners import Runner
-# from google.adk.sessions import InMemorySessionService
-# from shared.executor import BaseADKExecutor
-
-
 import os
 from dotenv import load_dotenv
 import uvicorn
@@ -265,7 +246,7 @@ def main() -> None:
     import uvicorn
     
     PORT = int(os.environ.get("FINANCE_AGENT_PORT", 8890))
-    HOST = os.environ.get("AGENT_HOST", "0.0.0.0")
+    HOST = os.environ.get("AGENT_HOST", "localhost")
 
     a2a_app = to_a2a(finance_agent, port=PORT)
 

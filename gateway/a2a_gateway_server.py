@@ -55,10 +55,12 @@ TIMEOUT_SECS = float(os.environ.get("AGENT_TIMEOUT_SECS", 600))
 
 # 👉 Add agents here (no keywords needed)
 AGENT_URLS = [
-    "http://localhost:8890",  # finance
-    "http://localhost:8891",  # analytics
-    "http://localhost:8892",  # budget
-    "http://localhost:8888",  # supervisor/travel
+    "http://localhost:8890",  # finance, adk
+    # "http://localhost:8891",  # analytics
+
+    "http://localhost:8892",  # budget, autogen_agentchat
+    "http://localhost:8888",  # supervisor/travel, langraph
+    "http://localhost:8893",  # hr  ← ADD
 ]
 
 _request_counter = 0
@@ -68,10 +70,6 @@ _request_counter = 0
 # 1️⃣ Agent Discovery
 # ─────────────────────────────────────────────────────────────
 
-# async def fetch_agent_card(url: str) -> Dict:
-#     async with httpx.AsyncClient() as client:
-#         res = await client.get(url)
-#         return res.json()
 
 async def fetch_agent_card(url: str) -> Dict:
     async with httpx.AsyncClient() as client:
@@ -175,20 +173,21 @@ router_agent = Agent(
     name="router_agent",
     model=oci_model,
     instruction="""
-You are a routing AI.
+You are a routing AI for a multi-agent system.
 
-Given:
-- A list of available agents (name + description + skills)
-- A user query
+Given a user query and a list of agents, return a JSON array of ALL agent names
+whose skills are relevant to the query.
 
-Return ONLY a JSON array of agent names that should handle the query.
-
-Rules:
-- Return valid JSON only.
-- No explanations.
-- If multiple agents are relevant, include all.
-- If none match, return an empty JSON array [].
-"""
+Critical rules:
+- NEVER consolidate — if a query has two distinct needs (e.g. travel search + budget),
+  return BOTH agents, not just the most capable one.
+- If the query mentions "budget", "cost", "how much", "spend", or "price estimation"
+  for any topic, ALWAYS include the budget agent.
+- If the query mentions time, weather, flights, or hotels, include the travel agent.
+- Return valid JSON only. No explanation. No markdown.
+- Example output: ["UnifiedSupervisorAgent", "BudgetAgent"]
+- If nothing matches: []
+""",
 )
 
 router_session_service = InMemorySessionService()

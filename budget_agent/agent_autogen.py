@@ -10,6 +10,7 @@ import os
 import uvicorn
 from dotenv import load_dotenv
 
+
 # A2A
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.apps import A2AStarletteApplication
@@ -110,7 +111,13 @@ def main():
 
     agent_card = AgentCard(
         name="BudgetAgent",
-        description="AutoGen multi-agent budget estimation and evaluation service.",
+        # description="AutoGen multi-agent budget estimation and evaluation service.",
+        description=(
+                    "Estimates and evaluates budgets for any purpose: travel trips, "
+                    "projects, events. Give it a list of items and costs — it itemizes, "
+                    "totals, and flags expensive items. Use this whenever the user asks "
+                    "for a budget, cost breakdown, or spend estimation."
+                ),
         url=f"http://{HOST}:{PORT}/",
         version="1.0.0",
         default_input_modes=["text"],
@@ -120,10 +127,19 @@ def main():
             AgentSkill(
                 id="budget_analysis",
                 name="Budget Analysis",
-                description="Extracts costs and evaluates financial reasonableness.",
-                tags=["budget", "cost", "finance"],
+                description=(
+                "Takes a list of items and costs, computes total spend, "
+                "flags expensive items, and gives a financial verdict."
+                ),
+                tags=[
+                    "budget", "cost", "spend", "estimate", "price",
+                    "trip budget", "travel cost", "breakdown", "itemize",
+                    "how much", "total cost"
+                ],
                 examples=[
-                    "Flight 5000, Hotel 8000, Food 2000"
+                    "Budget for my New York trip: flights 800, hotel 1200, food 300",
+                    "Flight 5000, Hotel 8000, Food 2000 — is this reasonable?",
+                    "What would a 5-day Paris trip cost me?",
                 ],
             ),
         ],
