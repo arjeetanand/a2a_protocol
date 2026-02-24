@@ -11,7 +11,7 @@ Architecture (mirrors budget_agent pattern):
 import json
 import os
 import re
-from collections import defaultdict
+# from collections import defaultdict
 
 import httpx
 import uvicorn
@@ -25,85 +25,114 @@ from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from a2a.utils import new_agent_text_message
 
-from hr_agent.timesheet_data import TIMESHEET_DB, get_current_week_range
+# from hr_agent.timesheet_data import TIMESHEET_DB, get_current_week_range
+
+from mcp import ClientSession
+from mcp.client.sse import sse_client
+import asyncio
+import concurrent.futures
 
 load_dotenv()
 
 
+MCP_URL = os.environ.get("TIMESHEET_MCP_URL", "http://localhost:8895/sse")
+
+
+async def _mcp_get_hours(employee_name: str) -> dict:
+    async with sse_client(MCP_URL) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(
+                "get_employee_hours",
+                {"employee_name": employee_name},
+            )
+            text = result.content[0].text if result.content else "{}"
+            return json.loads(text)
+
+async def _mcp_list_employees() -> dict:
+    async with sse_client(MCP_URL) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool("list_employees", {})
+            text = result.content[0].text if result.content else "{}"
+            return json.loads(text)
+
+
+async def _mcp_team_summary() -> dict:
+    async with sse_client(MCP_URL) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool("team_summary", {})
+            text = result.content[0].text if result.content else "{}"
+            return json.loads(text)
+
+       
+def get_employee_hours_via_mcp(employee_name: str) -> dict:
+    def _run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(_mcp_get_hours(employee_name))
+        finally:
+            loop.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_run).result(timeout=30)
+    
+
+def list_employees_via_mcp() -> dict:
+    def _run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(_mcp_list_employees())
+        finally:
+            loop.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_run).result(timeout=30)
+
+
+def team_summary_via_mcp() -> dict:
+    def _run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(_mcp_team_summary())
+        finally:
+            loop.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_run).result(timeout=30)
+    
 # ══════════════════════════════════════════════════════════════════════
 # Step 1 — Pure-Python HR Tools  (0 LLM calls)
 # ══════════════════════════════════════════════════════════════════════
 
 def get_timesheet_status(employee_name: str) -> dict:
-    """Lookup a single employee's timesheet — pure Python, no LLM."""
-    name = employee_name.strip().lower()
-    week_start, week_end = get_current_week_range()
+    data = get_employee_hours_via_mcp(employee_name)
 
-    if name not in TIMESHEET_DB:
-        return {
-            "status": "not_found",
-            "employee": employee_name,
-            "available_employees": list(TIMESHEET_DB.keys()),
-        }
+    if data.get("status") == "not_found":
+        return data
 
-    entries = TIMESHEET_DB[name]
-    if not entries:
+    if data.get("status") == "no_timesheet":
         return {
             "status": "not_filled",
             "employee": employee_name,
-            "week": f"{week_start} to {week_end}",
+            "week": data.get("week"),
         }
 
-    project_hours: dict[str, float] = defaultdict(float)
-    for entry in entries:
-        project_hours[entry["project_id"]] += entry["hours"]
-
-    return {
-        "status": "filled",
-        "employee": employee_name,
-        "week": f"{week_start} to {week_end}",
-        "total_hours": sum(project_hours.values()),
-        "days_logged": len(entries),
-        "project_breakdown": dict(project_hours),
-    }
-
-
-def list_all_employees() -> dict:
-    """Return every employee with their fill status — pure Python, no LLM."""
-    week_start, week_end = get_current_week_range()
-    summary = {
-        name: {
-            "filled": bool(entries),
-            "total_hours": sum(e["hours"] for e in entries),
-            "projects": list({e["project_id"] for e in entries}),
+    if data.get("status") == "ok":
+        return {
+            "status": "filled",
+            "employee": employee_name,
+            "week": data.get("week"),
+            "total_hours": data.get("total_hours"),
+            "days_logged": data.get("days_logged"),
+            "project_breakdown": data.get("project_breakdown"),
         }
-        for name, entries in TIMESHEET_DB.items()
-    }
-    return {
-        "status": "success",
-        "week": f"{week_start} to {week_end}",
-        "employee_count": len(summary),
-        "employees": summary,
-    }
 
-
-def get_team_summary() -> dict:
-    """Team-wide completion overview with % rate — pure Python, no LLM."""
-    data = list_all_employees()
-    emps = data["employees"]
-    filled  = [n for n, d in emps.items() if d["filled"]]
-    missing = [n for n, d in emps.items() if not d["filled"]]
-    rate = round(len(filled) / len(emps) * 100, 1) if emps else 0.0
-    return {
-        "status": "success",
-        "week": data["week"],
-        "total_employees": len(emps),
-        "filled_count": len(filled),
-        "missing_count": len(missing),
-        "completion_rate_percent": rate,
-        "filled": filled,
-        "missing": missing,
-    }
+    return {"status": "error", "raw": data}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -122,14 +151,19 @@ def detect_intent(query: str) -> set[str]:
     return {k for k, pat in _INTENTS.items() if re.search(pat, q)}
 
 
+def get_all_employee_names_from_mcp() -> list:
+    data = list_employees_via_mcp()
+    return list(data.get("employees", {}).keys())
+
 def extract_employee_name(query: str) -> str | None:
-    """Match any known employee name inside the query (case-insensitive)."""
+    names = get_all_employee_names_from_mcp()
     q = query.lower()
-    for name in TIMESHEET_DB:
+
+    for name in names:
         if name in q:
             return name
-    return None
 
+    return None
 
 # ══════════════════════════════════════════════════════════════════════
 # Step 3 — Action Dispatcher  (pure Python, 0 LLM calls)
@@ -151,20 +185,20 @@ def run_hr_actions(query: str) -> dict:
     # "status" intent but no name found → flag for clarification
     elif "status" in intent:
         computed["clarification_needed"] = True
-        computed["available_employees"]  = list(TIMESHEET_DB.keys())
+        computed["available_employees"]  = get_all_employee_names_from_mcp()
 
     # List employees
     if "list" in intent:
-        computed["employee_list"] = list_all_employees()
+        computed["employee_list"] = list_employees_via_mcp()
 
     # Team summary / completion report
     if "summary" in intent:
-        computed["team_summary"] = get_team_summary()
+        computed["team_summary"] = team_summary_via_mcp()
 
     # Fallback: nothing matched → full team summary
     if not any(k in computed for k in
                ["timesheet_status", "employee_list", "team_summary", "clarification_needed"]):
-        computed["team_summary"] = get_team_summary()
+        computed["team_summary"] = team_summary_via_mcp()
 
     return computed
 
@@ -173,23 +207,23 @@ def run_hr_actions(query: str) -> dict:
 # Step 4 — Single Ollama Synthesis  (exactly 1 LLM call)
 # ══════════════════════════════════════════════════════════════════════
 
-_HR_PROMPT = """\
-You are a professional HR assistant. Pre-computed timesheet data is below.
-Write a concise, professional HR response using ONLY these exact facts.
+_HR_PROMPT = """
+    You are a professional HR assistant. Pre-computed timesheet data is below.
+    Write a concise, professional HR response using ONLY these exact facts.
 
-Rules:
-- First sentence = direct answer to the manager's question.
-- Cite exact numbers (hours, projects, dates) from the data.
-- Structure: Direct Answer → Key Details → Action / Follow-up (if needed).
-- If a timesheet is missing, suggest a polite follow-up.
-- Stay under 120 words. Never say "based on the data provided".
+    Rules:
+    - First sentence = direct answer to the manager's question.
+    - Cite exact numbers (hours, projects, dates) from the data.
+    - Structure: Direct Answer → Key Details → Action / Follow-up (if needed).
+    - If a timesheet is missing, suggest a polite follow-up.
+    - Stay under 120 words. Never say "based on the data provided".
 
-Manager Query: {query}
+    Manager Query: {query}
 
-Pre-Computed HR Data:
-{data}
+    Pre-Computed HR Data:
+    {data}
 
-Write the HR response now:"""
+    Write the HR response now:"""
 
 
 async def synthesize_hr_response(computed: dict) -> str:
@@ -228,8 +262,28 @@ class HRAgentExecutor(AgentExecutor):
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         query = context.get_user_input()
         try:
-            computed  = run_hr_actions(query)                    # 0 LLM
-            narrative = await synthesize_hr_response(computed)   # 1 LLM
+
+            print("\n📩 HR QUERY:", query)
+
+            computed = run_hr_actions(query)
+
+            print("\n🧠 INTENT DETECTED:", computed.get("detected_intent"))
+            if "employee_list" in computed:
+                print("🔎 TOOL CALLED: list_employees (via MCP)")
+            if "team_summary" in computed:
+                print("🔎 TOOL CALLED: team_summary (via MCP)")
+            if "timesheet_status" in computed:
+                print("🔎 TOOL CALLED: get_employee_hours (via MCP)")
+                
+            print("\n📊 COMPUTED DATA:")
+            print(json.dumps(computed, indent=2))
+
+            narrative = await synthesize_hr_response(computed)
+
+            print("\n🤖 LLM RAW RESPONSE:")
+            print(narrative)
+            print("────────────────────────────────────\n")
+
             await event_queue.enqueue_event(new_agent_text_message(narrative))
         except Exception as e:
             await event_queue.enqueue_event(
@@ -251,9 +305,11 @@ def main() -> None:
     agent_card = AgentCard(
         name="hr_agent",
         description=(
-            "HR Timesheet Agent. Checks individual employee timesheet status, "
-            "lists all employees, and generates team completion summaries. "
-            "Pure-Python data lookups + single Ollama call for narration."
+            "HR Timesheet Agent. Checks whether individual employees have submitted "
+            "their weekly timesheets, lists all registered employees, and reports "
+            "team-wide timesheet completion rates. "
+            "NOT for salary, payslip, net pay, or payroll calculations — "
+            "use PayrollAgent for those."
         ),
         url=f"http://{HOST}:{PORT}/",
         version="1.0.0",
@@ -264,29 +320,56 @@ def main() -> None:
             AgentSkill(
                 id="timesheet_status",
                 name="Timesheet Status Check",
-                description="Check if a named employee has filled their timesheet this week.",
-                tags=["timesheet", "employee", "hours", "status", "filled", "submitted", "log"],
+                description=(
+                    "Check whether a named employee has submitted their timesheet "
+                    "this week. Returns hours logged and project breakdown if filled, "
+                    "or a missing-submission flag if not."
+                ),
+                tags=[
+                    "timesheet",
+                    "timesheet submission",
+                    "weekly hours",
+                    "attendance log",
+                    "team completion report",
+                ],
+                # tags=[
+                #     "timesheet", "timesheet status", "submitted timesheet",
+                #     "filled timesheet", "has X submitted", "did X fill",
+                #     "hours logged", "attendance", "LOP", "absent",
+                #     "who submitted", "who has not submitted",
+                # ],
                 examples=[
                     "Has Arjeet filled his timesheet this week?",
-                    "Check timesheet for Priya.",
-                    "How many hours did Rahul log?",
+                    "Check timesheet status for Priya.",
+                    "Did Rahul submit his timesheet?",
+                    "How many hours did Arjeet log this week?",
                 ],
             ),
             AgentSkill(
                 id="employee_list",
                 name="Employee List",
-                description="List all registered employees with their fill status.",
-                tags=["employees", "list", "all", "hr", "registered"],
-                examples=["List all employees", "Who is in the system?"],
+                description="List all registered employees with their timesheet fill status.",
+                tags=["employees", "list employees", "all employees", "who is registered"],
+                examples=[
+                    "List all employees.",
+                    "Who is in the system?",
+                ],
             ),
             AgentSkill(
                 id="team_summary",
                 name="Team Completion Summary",
-                description="Team-wide timesheet completion rate with filled/missing breakdown.",
-                tags=["team", "summary", "completion", "overview", "report", "missing", "attendance"],
+                description=(
+                    "Team-wide timesheet completion report: how many submitted, "
+                    "who is missing, completion rate percentage."
+                ),
+                tags=[
+                    "team summary", "completion report", "who hasn't submitted",
+                    "missing timesheets", "attendance report", "team overview",
+                ],
                 examples=[
-                    "Who hasn't filled their timesheet?",
+                    "Who hasn't filled their timesheet this week?",
                     "Give me the team timesheet completion report.",
+                    "How many employees have missing timesheets?",
                 ],
             ),
         ],

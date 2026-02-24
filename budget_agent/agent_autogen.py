@@ -24,6 +24,9 @@ from autogen_ext.models.ollama import OllamaChatCompletionClient
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.teams import RoundRobinGroupChat
 
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+
 load_dotenv()
 
 # ─────────────────────────────────────────────────────────────

@@ -294,45 +294,25 @@ def langgraph_travel_tool(query: str) -> dict:
 
 
 # ─────────────────────────────────────────────
-# 4. ADK weather & time sub-agents
+# Weather & Time Tools (Pure LangGraph)
 # ─────────────────────────────────────────────
 import datetime
 from zoneinfo import ZoneInfo
-from google.adk.agents import Agent
-from google.adk.models.lite_llm import LiteLlm
-
-from shared.utils import build_oci_model
-_oci_model = build_oci_model()
+from langchain_core.tools import tool
 
 
-def get_weather(city: str) -> dict:
+@tool
+def get_weather(city: str) -> str:
     """Retrieves the current weather report for a specified city."""
     if city.lower() == "new york":
-        return {"status": "success", "report": "Sunny, 25°C (77°F) in New York."}
-    return {"status": "error", "error_message": f"Weather info for '{city}' is unavailable."}
+        return "Sunny, 25°C (77°F) in New York."
+    return f"Weather info for '{city}' is unavailable."
 
 
-def get_current_time(city: str) -> dict:
+@tool
+def get_current_time(city: str) -> str:
     """Returns the current time in a specified city."""
     if city.lower() == "new york":
         now = datetime.datetime.now(ZoneInfo("America/New_York"))
-        return {
-            "status": "success",
-            "report": f'Current time in {city}: {now.strftime("%Y-%m-%d %H:%M:%S %Z")}',
-        }
-    return {"status": "error", "error_message": f"No timezone info for {city}."}
-
-
-weather_agent = Agent(
-    name="weather_agent",
-    model=_oci_model,
-    instruction="Answer weather questions using get_weather.",
-    tools=[get_weather],
-)
-
-time_agent = Agent(
-    name="time_agent",
-    model=_oci_model,
-    instruction="Answer time questions using get_current_time.",
-    tools=[get_current_time],
-)
+        return f"Current time in {city}: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+    return f"No timezone info for {city}."

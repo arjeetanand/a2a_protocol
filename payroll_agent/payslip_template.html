@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: Arial, sans-serif;
+    font-size: 11px;
+    color: #222;
+    padding: 24px 30px;
+  }
+
+  /* ── Header ─────────────────────────────────────── */
+  .header {
+    display: flex;
+    align-items: flex-start;
+    border-bottom: 2px solid #c00000;
+    padding-bottom: 10px;
+    margin-bottom: 12px;
+  }
+  .logo {
+    font-size: 26px;
+    font-weight: bold;
+    color: #c00000;
+    letter-spacing: -1px;
+    min-width: 110px;
+    padding-top: 4px;
+  }
+  .company-info {
+    flex: 1;
+    line-height: 1.5;
+  }
+  .company-name {
+    font-weight: bold;
+    font-size: 13px;
+  }
+
+  /* ── Payslip title ───────────────────────────────── */
+  .payslip-title {
+    text-align: center;
+    font-size: 13px;
+    font-weight: bold;
+    letter-spacing: 0.5px;
+    margin: 10px 0;
+    text-transform: uppercase;
+    border: 1px solid #555;
+    padding: 5px;
+    background: #f5f5f5;
+  }
+
+  /* ── Employee details grid ───────────────────────── */
+  .emp-details {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 12px;
+    font-size: 11px;
+  }
+  .emp-details td {
+    border: 1px solid #bbb;
+    padding: 4px 8px;
+    width: 25%;
+  }
+  .emp-details td:nth-child(odd) {
+    font-weight: bold;
+    background: #f0f0f0;
+    width: 18%;
+  }
+
+  /* ── Earnings / Deductions table ─────────────────── */
+  .pay-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 12px;
+    font-size: 11px;
+  }
+  .pay-table th {
+    background: #c00000;
+    color: #fff;
+    padding: 5px 8px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: bold;
+  }
+  .pay-table td {
+    border: 1px solid #ccc;
+    padding: 4px 8px;
+    vertical-align: top;
+  }
+  .pay-table tr:nth-child(even) td { background: #fafafa; }
+
+  /* Left half = Earnings, Right half = Deductions */
+  .pay-table .col-label  { width: 27%; font-weight: normal; }
+  .pay-table .col-amount { width: 10%; text-align: right; }
+  .pay-table .col-ytd    { width: 13%; text-align: right; color: #555; }
+
+  .pay-table .total-row td {
+    font-weight: bold;
+    background: #eee !important;
+    border-top: 2px solid #999;
+  }
+
+  /* ── Net pay box ─────────────────────────────────── */
+  .net-pay-section {
+    border: 1px solid #aaa;
+    padding: 8px 14px;
+    margin-bottom: 12px;
+    background: #fff8f0;
+  }
+  .net-pay-section .net-label {
+    font-size: 13px;
+    font-weight: bold;
+  }
+  .net-pay-section .net-amount {
+    font-size: 16px;
+    font-weight: bold;
+    color: #c00000;
+  }
+  .net-pay-section .in-words {
+    font-size: 11px;
+    color: #333;
+    margin-top: 3px;
+  }
+
+  /* ── Bonus breakdown panel ───────────────────────── */
+  .bonus-panel {
+    border: 1px solid #b8d4f0;
+    background: #f0f7ff;
+    padding: 7px 12px;
+    margin-bottom: 12px;
+    border-radius: 3px;
+  }
+  .bonus-panel .bp-title {
+    font-weight: bold;
+    color: #1a4a8a;
+    margin-bottom: 4px;
+    font-size: 11.5px;
+  }
+  .bonus-panel table {
+    width: 100%;
+    font-size: 11px;
+    border-collapse: collapse;
+  }
+  .bonus-panel td { padding: 2px 6px; }
+  .bonus-panel td:last-child { text-align: right; font-weight: bold; }
+
+  /* ── Days/LOP row ────────────────────────────────── */
+  .days-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    margin-bottom: 10px;
+  }
+  .days-table th {
+    background: #555;
+    color: #fff;
+    padding: 4px 8px;
+    text-align: center;
+  }
+  .days-table td {
+    border: 1px solid #ccc;
+    padding: 4px 8px;
+    text-align: center;
+  }
+
+  /* ── Footer note ─────────────────────────────────── */
+  .footer-note {
+    text-align: center;
+    font-size: 9.5px;
+    color: #777;
+    margin-top: 6px;
+    border-top: 1px solid #ddd;
+    padding-top: 6px;
+  }
+
+  /* Separator between left/right halves */
+  .pay-table .sep { width: 2px; background: #999; padding: 0; }
+</style>
+</head>
+<body>
+
+<!-- ══ HEADER ══════════════════════════════════════════════════════════ -->
+<div class="header">
+  <div class="logo">{{ logo_text }}</div>
+  <div class="company-info">
+    <div class="company-name">{{ company_name }}</div>
+    {% for line in company_address %}
+    <div>{{ line }}</div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- ══ PAYSLIP TITLE ════════════════════════════════════════════════════ -->
+<div class="payslip-title">Payslip for the Month of {{ month_label }}</div>
+
+<!-- ══ EMPLOYEE DETAILS ════════════════════════════════════════════════ -->
+<table class="emp-details">
+  <tr>
+    <td>Emp Code</td>   <td>{{ emp_code }}</td>
+    <td>Emp Name</td>   <td>{{ full_name }}</td>
+  </tr>
+  <tr>
+    <td>Department</td> <td>{{ department }}</td>
+    <td>PF No.</td>     <td>{{ pf_number }}</td>
+  </tr>
+  <tr>
+    <td>Location</td>   <td>{{ location }}</td>
+    <td>Designation</td><td>{{ designation }}</td>
+  </tr>
+  <tr>
+    <td>Date of Birth</td> <td>{{ date_of_birth }}</td>
+    <td>Bank A/c No</td>   <td>{{ bank_account }}</td>
+  </tr>
+  <tr>
+    <td>Date of Joining</td> <td>{{ date_of_joining }}</td>
+    <td>Pan No.</td>         <td>{{ pan_no }}</td>
+  </tr>
+  <tr>
+    <td>UAN</td> <td>{{ uan }}</td>
+    <td>Gender</td> <td>{{ gender }}</td>
+  </tr>
+</table>
+
+<!-- ══ BILLABLE HOURS BONUS PANEL ══════════════════════════════════════ -->
+<div class="bonus-panel">
+  <div class="bp-title">📊 Billable Hours Bonus Calculation</div>
+  <table>
+    <tr><td>Billable Hours Logged (this week)</td><td>{{ total_hours }} hrs</td></tr>
+    <tr><td>Bonus Rate per Hour</td><td>₹{{ bonus_per_hour }}</td></tr>
+    <tr><td>Projects</td><td>{{ projects_summary }}</td></tr>
+    <tr><td style="border-top:1px solid #aac4e8; padding-top:4px; font-weight:bold;">
+      Billable Hours Bonus Earned</td>
+      <td style="border-top:1px solid #aac4e8; padding-top:4px;">
+      ₹{{ billable_bonus }}</td></tr>
+  </table>
+</div>
+
+<!-- ══ EARNINGS / DEDUCTIONS TABLE ════════════════════════════════════ -->
+<table class="pay-table">
+  <thead>
+    <tr>
+      <th class="col-label">Earnings</th>
+      <th class="col-amount">Amount</th>
+      <th class="col-ytd">YTD</th>
+      <th class="sep"></th>
+      <th class="col-label">Deductions</th>
+      <th class="col-amount">Amount</th>
+      <th class="col-ytd">YTD</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Basic</td>
+      <td class="col-amount">{{ basic }}</td>
+      <td class="col-ytd">{{ basic_ytd }}</td>
+      <td class="sep"></td>
+      <td>Provident Fund</td>
+      <td class="col-amount">{{ pf_amount }}</td>
+      <td class="col-ytd">{{ pf_ytd }}</td>
+    </tr>
+    <tr>
+      <td>House Rent Allowance (HRA)</td>
+      <td class="col-amount">{{ hra }}</td>
+      <td class="col-ytd">{{ hra_ytd }}</td>
+      <td class="sep"></td>
+      <td>Profession Tax</td>
+      <td class="col-amount">{{ profession_tax }}</td>
+      <td class="col-ytd">{{ profession_tax_ytd }}</td>
+    </tr>
+    <tr>
+      <td>Special Allowance</td>
+      <td class="col-amount">{{ special_allowance }}</td>
+      <td class="col-ytd">{{ sa_ytd }}</td>
+      <td class="sep"></td>
+      <td>Employee Club</td>
+      <td class="col-amount">{{ employee_club }}</td>
+      <td class="col-ytd">{{ employee_club_ytd }}</td>
+    </tr>
+    <tr>
+      <td>Billable Hours Bonus</td>
+      <td class="col-amount">{{ billable_bonus }}</td>
+      <td class="col-ytd">{{ bonus_ytd }}</td>
+      <td class="sep"></td>
+      <td></td><td></td><td></td>
+    </tr>
+    <tr class="total-row">
+      <td>Total Earnings</td>
+      <td class="col-amount">{{ total_earnings }}</td>
+      <td class="col-ytd"></td>
+      <td class="sep"></td>
+      <td>Total Deductions</td>
+      <td class="col-amount">{{ total_deductions }}</td>
+      <td class="col-ytd"></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ══ NET PAY ══════════════════════════════════════════════════════════ -->
+<div class="net-pay-section">
+  <div>
+    <span class="net-label">Net Pay : </span>
+    <span class="net-amount">₹{{ net_pay }}</span>
+  </div>
+  <div class="in-words">In Words &nbsp; {{ net_pay_words }}</div>
+</div>
+
+<!-- ══ DAYS IN MONTH ════════════════════════════════════════════════════ -->
+<table class="days-table">
+  <thead>
+    <tr>
+      <th>Days In Month (A)</th>
+      <th>Arrear Days (B)</th>
+      <th>LOPR Days (C)</th>
+      <th>LOP Days (D)</th>
+      <th>Net Days Worked (E = A+B+C-D)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>{{ days_in_month }}</td>
+      <td>0.0</td>
+      <td>0.0</td>
+      <td>0.0</td>
+      <td>{{ days_in_month }}</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ══ FOOTER ═══════════════════════════════════════════════════════════ -->
+<div class="footer-note">
+  This is an auto-generated payslip and does not require any authentication.
+  &nbsp;|&nbsp; Generated by Payroll Agent (MAF + MCP)
+</div>
+
+</body>
+</html>

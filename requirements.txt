@@ -15,3 +15,7 @@ langgraph
 oci 
 litellm
 agent-framework --pre
+mcp 
+weasyprint 
+jinja2 
+crewai
