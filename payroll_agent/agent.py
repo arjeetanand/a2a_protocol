@@ -41,6 +41,8 @@ import uvicorn
 from pathlib import Path
 from datetime import date
 from dotenv import load_dotenv
+import base64
+from io import BytesIO
 
 # ── Microsoft Agent Framework ─────────────────────────────────────────────────
 from agent_framework import tool
@@ -71,6 +73,14 @@ from payroll_agent.payroll_data import (
     COMPANY,
     get_pay_period,
 )
+
+# from payroll_data import (
+#     EMPLOYEE_MASTER,
+#     PF_RATE,
+#     FLAT_DEDUCTIONS,
+#     COMPANY,
+#     get_pay_period,
+# )
 
 load_dotenv()
 
@@ -384,22 +394,40 @@ def generate_payslip_pdf(
         template  = env.get_template("payslip_template.html")
         html_str  = template.render(**ctx)
 
-        # ── Write PDF ─────────────────────────────────────────────────────────
-        os.makedirs(PDF_OUT_DIR, exist_ok=True)
-        safe_name = re.sub(r"[^a-z0-9]", "_", name)
-        month_tag = date.today().strftime("%b_%Y").lower()
-        pdf_path  = os.path.join(PDF_OUT_DIR, f"payslip_{safe_name}_{month_tag}.pdf")
-        import os
-        print("CWD:", os.getcwd())
-        print("Saving to:", pdf_path)
+        # ── Generate PDF in memory ────────────────────────────────────────────
+        pdf_bytes = WeasyprintHTML(
+            string=html_str,
+            base_url=str(TEMPLATE_DIR)
+        ).write_pdf()
 
-        WeasyprintHTML(string=html_str, base_url=str(TEMPLATE_DIR)).write_pdf(pdf_path)
+        pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
+
+        file_name = f"payslip_{name}_{date.today().strftime('%b_%Y').lower()}.pdf"
 
         return json.dumps({
-            "status":   "ok",
-            "pdf_path": pdf_path,
-            "message":  f"Payslip PDF generated for {emp.get('full_name', employee_name.title())}.",
+            "status": "ok",
+            "file_name": file_name,
+            "content_type": "application/pdf",
+            "pdf_base64": pdf_base64,
+            "message": f"Payslip PDF generated for {emp.get('full_name', employee_name.title())}.",
         })
+
+        # # ── Write PDF ─────────────────────────────────────────────────────────
+        # os.makedirs(PDF_OUT_DIR, exist_ok=True)
+        # safe_name = re.sub(r"[^a-z0-9]", "_", name)
+        # month_tag = date.today().strftime("%b_%Y").lower()
+        # pdf_path  = os.path.join(PDF_OUT_DIR, f"payslip_{safe_name}_{month_tag}.pdf")
+
+        # print("CWD:", os.getcwd())
+        # print("Saving to:", pdf_path)
+
+        # WeasyprintHTML(string=html_str, base_url=str(TEMPLATE_DIR)).write_pdf(pdf_path)
+
+        # return json.dumps({
+        #     "status":   "ok",
+        #     "pdf_path": pdf_path,
+        #     "message":  f"Payslip PDF generated for {emp.get('full_name', employee_name.title())}.",
+        # })
 
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e)})

@@ -1,4 +1,4 @@
-from payroll_agent.agent_bkp import main
+from payroll_agent.agent import main
 
 if __name__ == "__main__":
     main()

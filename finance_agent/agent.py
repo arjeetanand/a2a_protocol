@@ -1,19 +1,56 @@
 """
 finance_agent/agent.py
 
-Finance Agent — handles budget analysis, cost estimation, ROI, expenses.
+Finance Agent — handles ROI and project cost estimation.
 Runs as an A2A server on port 8890.
 """
 
 import os
-from dotenv import load_dotenv
 import uvicorn
+from dotenv import load_dotenv
 
+# ── A2A ─────────────────────────────────────────
+from a2a.server.agent_execution import AgentExecutor, RequestContext
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.server.events import EventQueue
+from a2a.types import AgentCard, AgentCapabilities, AgentSkill
+from a2a.utils import new_agent_text_message
+
+# ── ADK ─────────────────────────────────────────
 from google.adk.agents import Agent
-from google.adk.a2a.utils.agent_to_a2a import to_a2a
-from shared.utils import build_oci_model
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+from google.genai import types as genai_types
+from google.adk.models.lite_llm import LiteLlm
+
+# ────────────────────────────────────────────────
 
 load_dotenv()
+
+# ── OCI Model Setup ────────────────────────────
+
+def require_env(key: str) -> str:
+    val = os.getenv(key)
+    if not val:
+        raise EnvironmentError(f"Missing required env var: {key}")
+    return val.strip()
+
+
+def build_oci_model() -> LiteLlm:
+    return LiteLlm(
+        model="oci/xai.grok-4",
+        max_tokens=1500,
+        oci_region=require_env("OCI_REGION"),
+        oci_user=require_env("OCI_USER"),
+        oci_fingerprint=require_env("OCI_FINGERPRINT"),
+        oci_tenancy=require_env("OCI_TENANCY"),
+        oci_compartment_id=require_env("OCI_COMPARTMENT_ID"),
+        oci_key_file=require_env("OCI_KEY_FILE"),
+        oci_serving_mode="ON_DEMAND",
+    )
+
 
 oci_model = build_oci_model()
 
@@ -43,42 +80,6 @@ def calculate_roi(investment: float, returns: float) -> dict:
         "roi_percent": round(roi, 2),
         "interpretation": interpretation,
     }
-
-
-def analyze_budget(items: str) -> dict:
-    """
-    Parse a plain-text budget breakdown and return a structured analysis.
-
-    Args:
-        items: A comma-separated list of 'item:cost' pairs.
-               Example: "developer:15000, AWS:500, design:3000"
-
-    Returns:
-        dict with total, item breakdown, and largest expense.
-    """
-    try:
-        parsed = {}
-        for entry in items.split(","):
-            entry = entry.strip()
-            if ":" not in entry:
-                continue
-            name, cost_str = entry.rsplit(":", 1)
-            parsed[name.strip()] = float(cost_str.strip())
-
-        if not parsed:
-            return {"status": "error", "error_message": "No valid 'item:cost' pairs found."}
-
-        total = sum(parsed.values())
-        largest = max(parsed, key=parsed.get)
-        return {
-            "status": "success",
-            "items": parsed,
-            "total_cost": total,
-            "largest_expense": f"{largest} (${parsed[largest]:,.2f})",
-            "suggestion": f"Consider reducing {largest} to lower overall spend.",
-        }
-    except Exception as e:
-        return {"status": "error", "error_message": str(e)}
 
 
 def estimate_project_cost(
@@ -122,7 +123,6 @@ finance_agent = Agent(
 
 Your capabilities:
 - Calculate ROI using calculate_roi(investment, returns)
-- Analyze a budget breakdown using analyze_budget(items)
 - Estimate project costs using estimate_project_cost(...)
 
 Rules:
@@ -130,127 +130,109 @@ Rules:
 - Present results in a clean, structured way with currency formatting.
 - Highlight the largest cost driver and suggest one actionable saving.
 - Keep answers concise but complete.""",
-    tools=[calculate_roi, analyze_budget, estimate_project_cost],
+    tools=[calculate_roi, estimate_project_cost],
 )
 
 
 # ── A2A Executor ──────────────────────────────────────────────────────────────
+class FinanceAgentExecutor(AgentExecutor):
 
-# class FinanceAgentExecutor(AgentExecutor):
-#     APP_NAME = "finance_agent"
+    APP_NAME = "finance_agent"
 
-#     def __init__(self) -> None:
-#         self.session_service = InMemorySessionService()
-#         self.runner = Runner(
-#             agent=finance_agent,
-#             app_name=self.APP_NAME,
-#             session_service=self.session_service,
-#         )
+    def __init__(self):
+        self.session_service = InMemorySessionService()
+        self.runner = Runner(
+            agent=finance_agent,
+            app_name=self.APP_NAME,
+            session_service=self.session_service,
+        )
 
-#     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-#         from google.genai import types as genai_types
+    async def execute(self, context: RequestContext, event_queue: EventQueue):
+        prompt = context.get_user_input()
 
-#         prompt = context.get_user_input()
-#         session = await self.session_service.create_session(
-#             app_name=self.APP_NAME,
-#             user_id="a2a_user",
-#         )
-#         user_content = genai_types.Content(
-#             role="user",
-#             parts=[genai_types.Part(text=prompt)],
-#         )
+        session = await self.session_service.create_session(
+            app_name=self.APP_NAME,
+            user_id="a2a_user",
+        )
 
-#         final_text = ""
-#         async for event in self.runner.run_async(
-#             user_id="a2a_user",
-#             session_id=session.id,
-#             new_message=user_content,
-#         ):
-#             if event.is_final_response():
-#                 if event.content and event.content.parts:
-#                     final_text = "".join(
-#                         part.text
-#                         for part in event.content.parts
-#                         if hasattr(part, "text") and part.text
-#                     )
-#                 break
+        user_content = genai_types.Content(
+            role="user",
+            parts=[genai_types.Part(text=prompt)],
+        )
 
-#         await event_queue.enqueue_event(
-#             new_agent_text_message(final_text or "Finance agent returned no response.")
-#         )
+        final_text = ""
 
-#     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-#         pass
+        async for event in self.runner.run_async(
+            user_id="a2a_user",
+            session_id=session.id,
+            new_message=user_content,
+        ):
+            if event.is_final_response():
+                if event.content and event.content.parts:
+                    final_text = "".join(
+                        p.text for p in event.content.parts
+                        if hasattr(p, "text") and p.text
+                    )
+                break
 
-# # class FinanceAgentExecutor(BaseADKExecutor):
-# #     APP_NAME = "finance_agent"
+        await event_queue.enqueue_event(
+            new_agent_text_message(
+                final_text or "Finance agent returned no response."
+            )
+        )
 
-# #     def __init__(self):
-# #         super().__init__(finance_agent)
-
-# # ── Server entry-point ────────────────────────────────────────────────────────
-
-# def main() -> None:
-#     PORT = int(os.environ.get("FINANCE_AGENT_PORT", 8890))
-#     HOST = os.environ.get("AGENT_HOST", "localhost")
-
-#     agent_card = AgentCard(
-#         name="FinanceAgent",
-#         description="Handles budget analysis, ROI calculation, cost estimation, and expense tracking.",
-#         url=f"http://{HOST}:{PORT}/",
-#         version="1.0.0",
-#         default_input_modes=["text"],
-#         default_output_modes=["text"],
-#         capabilities=AgentCapabilities(streaming=False),
-#         skills=[
-#             AgentSkill(
-#                 id="roi_calculation",
-#                 name="ROI Calculation",
-#                 description="Calculate return on investment.",
-#                 tags=["roi", "invest", "returns"],
-#                 examples=["I invested $10,000 and got back $14,000. What's my ROI?"],
-#             ),
-#             AgentSkill(
-#                 id="budget_analysis",
-#                 name="Budget Analysis",
-#                 description="Analyze a cost breakdown and identify savings.",
-#                 tags=["budget", "cost", "expense"],
-#                 examples=["My budget: developer:15000, AWS:500, design:3000"],
-#             ),
-#             AgentSkill(
-#                 id="project_cost",
-#                 name="Project Cost Estimator",
-#                 description="Estimate total project cost from team size and duration.",
-#                 tags=["cost", "price", "money", "finance", "revenue"],
-#                 examples=["3 developers at $120/hr for 6 weeks, $400/month infra"],
-#             ),
-#         ],
-#     )
-
-#     request_handler = DefaultRequestHandler(
-#         agent_executor=FinanceAgentExecutor(),
-#         task_store=InMemoryTaskStore(),
-#     )
-#     server = A2AStarletteApplication(agent_card=agent_card, http_handler=request_handler)
-
-#     print(f"💰 Finance Agent running at http://{HOST}:{PORT}")
-#     uvicorn.run(server.build(), host=HOST, port=PORT)
+    async def cancel(self, context: RequestContext, event_queue: EventQueue):
+        pass
 
 
-# if __name__ == "__main__":
-#     main()
+# ── Server Bootstrap ───────────────────────────
 
+def main():
 
-# ── A2A Bootstrap ───────────────────────────────────────────
-def main() -> None:
-    import uvicorn
-    
     PORT = int(os.environ.get("FINANCE_AGENT_PORT", 8890))
     HOST = os.environ.get("AGENT_HOST", "localhost")
 
-    a2a_app = to_a2a(finance_agent, port=PORT)
+    agent_card = AgentCard(
+        name="FinanceAgent",
+        description=(
+            "Finance analysis agent for ROI calculation "
+            "and project cost estimation."
+        ),
+        url=f"http://{HOST}:{PORT}/",
+        version="2.0.0",
+        default_input_modes=["text"],
+        default_output_modes=["text"],
+        capabilities=AgentCapabilities(streaming=False),
+        skills=[
+            AgentSkill(
+                id="roi",
+                name="ROI Calculation",
+                description="Calculate return on investment percentage.",
+                tags=["roi", "investment", "returns"],
+                examples=["I invested 10000 and got back 15000. What is ROI?"],
+            ),
+            AgentSkill(
+                id="project_cost",
+                name="Project Cost Estimation",
+                description="Estimate project cost based on team and duration.",
+                tags=["project cost", "estimation", "developers"],
+                examples=["3 developers at 120 per hour for 6 weeks with 400 infra"],
+            ),
+        ],
+    )
 
-    uvicorn.run(a2a_app, host=HOST, port=PORT)
+    handler = DefaultRequestHandler(
+        agent_executor=FinanceAgentExecutor(),
+        task_store=InMemoryTaskStore(),
+    )
+
+    server = A2AStarletteApplication(
+        agent_card=agent_card,
+        http_handler=handler,
+    )
+
+    print(f"💰 Finance Agent → http://{HOST}:{PORT}")
+    uvicorn.run(server.build(), host=HOST, port=PORT)
 
 
 if __name__ == "__main__":

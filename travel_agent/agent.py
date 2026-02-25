@@ -9,6 +9,9 @@ import json
 import re
 from typing import Any, List, Optional, Annotated, TypedDict
 from dotenv import load_dotenv
+import re
+import json
+from typing import Optional
 
 load_dotenv()
 
@@ -159,14 +162,59 @@ class OCIChatModel(BaseChatModel):
 
         return "\n".join(parts)
 
+    # def _parse_tool_call(self, text: str) -> Optional[dict]:
+    #     try:
+    #         clean = re.sub(r"```(?:json)?|```", "", text).strip()
+    #         data  = json.loads(clean)
+    #         if "tool_call" in data:
+    #             return data["tool_call"]
+    #     except (json.JSONDecodeError, KeyError):
+    #         pass
+    #     return None
+
+
     def _parse_tool_call(self, text: str) -> Optional[dict]:
+        """
+        Robustly extract tool_call JSON even if surrounded by explanation text.
+        """
+
+        if not text:
+            return None
+
+        # 1️⃣ Remove markdown fences if present
+        clean = re.sub(r"```(?:json)?|```", "", text).strip()
+
+        # 2️⃣ Try strict full JSON first (fast path)
         try:
-            clean = re.sub(r"```(?:json)?|```", "", text).strip()
-            data  = json.loads(clean)
+            data = json.loads(clean)
+            if isinstance(data, dict) and "tool_call" in data:
+                return data["tool_call"]
+        except Exception:
+            pass
+
+        # 3️⃣ Extract JSON block containing "tool_call"
+        try:
+            # Find first JSON object that contains "tool_call"
+            pattern = r"\{.*?\"tool_call\".*?\}"
+            match = re.search(pattern, clean, re.DOTALL)
+
+            if not match:
+                return None
+
+            json_block = match.group(0)
+
+            # Fix common LLM issues like trailing commas
+            json_block = re.sub(r",\s*}", "}", json_block)
+            json_block = re.sub(r",\s*]", "]", json_block)
+
+            data = json.loads(json_block)
+
             if "tool_call" in data:
                 return data["tool_call"]
-        except (json.JSONDecodeError, KeyError):
+
+        except Exception:
             pass
+
         return None
 
     def _generate(

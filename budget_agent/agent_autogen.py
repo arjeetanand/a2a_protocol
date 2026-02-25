@@ -9,7 +9,7 @@ NO ADK
 import os
 import uvicorn
 from dotenv import load_dotenv
-
+import litellm
 
 # A2A
 from a2a.server.agent_execution import AgentExecutor, RequestContext
@@ -23,6 +23,16 @@ from a2a.server.events import EventQueue
 from autogen_ext.models.ollama import OllamaChatCompletionClient
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.teams import RoundRobinGroupChat
+from autogen_core.models import (
+    ChatCompletionClient,
+    CreateResult,
+    RequestUsage,
+    ModelCapabilities,
+)
+
+from autogen_core import CancellationToken
+from autogen_core.models import LLMMessage, SystemMessage, UserMessage, AssistantMessage
+
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -33,11 +43,153 @@ load_dotenv()
 # AutoGen Model Client
 # ─────────────────────────────────────────────────────────────
 
-model_client = OllamaChatCompletionClient(
-    model="llama3.2",
-    host="http://localhost:11434",
-)
+# model_client = OllamaChatCompletionClient(
+#     model="llama3.2",
+#     host="http://localhost:11434",
+# )
 
+import os
+# from autogen_ext.models.litellm import LiteLLMChatCompletionClient
+
+
+def require_env(key: str) -> str:
+    val = os.getenv(key)
+    if not val:
+        raise EnvironmentError(f"Missing required env var: {key}")
+    return val.strip()
+
+
+class OCIGenAIClient(ChatCompletionClient):
+    """
+    LiteLLM-backed OCI GenAI client for AutoGen 0.7+
+    Works without autogen-ext[litellm] extra.
+    """
+
+    def __init__(self, model: str = "oci/meta.llama-3.1-70b-instruct", max_tokens: int = 1500):
+        self._model = model
+        self._max_tokens = max_tokens
+        self._total_prompt = 0
+        self._total_completion = 0
+
+        # OCI credentials — litellm reads these automatically
+        self._oci_kwargs = dict(
+            oci_region=require_env("OCI_REGION"),
+            oci_user=require_env("OCI_USER"),
+            oci_fingerprint=require_env("OCI_FINGERPRINT"),
+            oci_tenancy=require_env("OCI_TENANCY"),
+            oci_compartment_id=require_env("OCI_COMPARTMENT_ID"),
+            oci_key_file=require_env("OCI_KEY_FILE"),
+            oci_serving_mode="ON_DEMAND",
+        )
+
+    def _format_messages(self, messages: list[LLMMessage]) -> list[dict]:
+        role_map = {
+            "SystemMessage": "system",
+            "UserMessage": "user",
+            "AssistantMessage": "assistant",
+        }
+        result = []
+        for m in messages:
+            role = role_map.get(type(m).__name__, "user")
+            content = m.content if isinstance(m.content, str) else str(m.content)
+            result.append({"role": role, "content": content})
+        return result
+
+    async def create(
+        self,
+        messages: list[LLMMessage],
+        *,
+        tools=None,
+        json_output=None,
+        extra_create_args: dict = {},
+        cancellation_token: CancellationToken | None = None,
+    ) -> CreateResult:
+
+        print("\n================ LLM CALL ================")
+
+        formatted_messages = self._format_messages(messages)
+
+        print("\n🧠 PROMPT SENT TO OCI:")
+        for m in formatted_messages:
+            print(f"{m['role'].upper()}: {m['content']}")
+
+        response = await litellm.acompletion(
+            model=self._model,
+            messages=self._format_messages(messages),
+            max_tokens=self._max_tokens,
+            **self._oci_kwargs,
+            **extra_create_args,
+        )
+
+        content = response.choices[0].message.content or ""
+
+        print("\n🤖 RAW LLM RESPONSE:")
+        print(content)
+        print("==========================================\n")
+        
+        prompt_tokens = response.usage.prompt_tokens or 0
+        completion_tokens = response.usage.completion_tokens or 0
+
+        self._total_prompt += prompt_tokens
+        self._total_completion += completion_tokens
+
+        return CreateResult(
+            content=content,
+            usage=RequestUsage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            ),
+            finish_reason=response.choices[0].finish_reason or "stop",
+            cached=False,
+        )
+
+    async def create_stream(self, messages, **kwargs):
+        raise NotImplementedError("Streaming not supported.")
+    
+    async def close(self) -> None:
+        """Clean up any resources (nothing to close for litellm)."""
+        pass
+
+    def actual_usage(self) -> RequestUsage:
+        return RequestUsage(
+            prompt_tokens=self._total_prompt,
+            completion_tokens=self._total_completion,
+        )
+
+    def total_usage(self) -> RequestUsage:
+        return self.actual_usage()
+
+    def count_tokens(self, messages, **kwargs) -> int:
+        return sum(len(str(getattr(m, "content", ""))) // 4 for m in messages)
+
+    def remaining_tokens(self, messages, **kwargs) -> int:
+        return self._max_tokens - self.count_tokens(messages)
+
+    @property
+    def capabilities(self) -> ModelCapabilities:
+        return ModelCapabilities(
+            vision=False,
+            function_calling=False,
+            json_output=False,
+        )
+
+    @property
+    def model_info(self):
+        return {
+            "vision": False,
+            "function_calling": False,
+            "json_output": False,
+            "family": "unknown",
+            "structured_output": False,
+        }
+
+load_dotenv()
+
+# Drop-in replacement for OllamaChatCompletionClient
+model_client = OCIGenAIClient(
+    model="oci/xai.grok-4",   # or "oci/meta.llama-3.1-70b-instruct"
+    max_tokens=1500,
+)
 # ─────────────────────────────────────────────────────────────
 # AutoGen Agents
 # ─────────────────────────────────────────────────────────────
@@ -114,7 +266,6 @@ def main():
 
     agent_card = AgentCard(
         name="BudgetAgent",
-        # description="AutoGen multi-agent budget estimation and evaluation service.",
         description=(
                     "Estimates and evaluates budgets for any purpose: travel trips, "
                     "projects, events. Give it a list of items and costs — it itemizes, "
@@ -131,6 +282,7 @@ def main():
                 id="budget_analysis",
                 name="Budget Analysis",
                 description=(
+                    "ONLY analyze explicitly structured item:cost lists."
                 "Takes a list of items and costs, computes total spend, "
                 "flags expensive items, and gives a financial verdict."
                 ),

@@ -47,37 +47,6 @@ policy_agent = Agent(
 )
 
 
-# def run_leave_crew(employee_name: str) -> str:
-#     evaluation = evaluate_leave(employee_name)
-
-#     analysis_task = Task(
-#         description=f"""
-#         The following structured leave evaluation data is provided:
-#         {json.dumps(evaluation, indent=2)}
-
-#         Summarize the checks clearly.
-#         """,
-#         agent=hr_data_agent,
-#     )
-
-#     decision_task = Task(
-#         description="""
-#         Based on the analysis above:
-#         - Clearly state Leave Status (Approved / Rejected / Conditional)
-#         - Provide bullet-point reasons
-#         - Keep it professional and management-friendly
-#         """,
-#         agent=policy_agent,
-#     )
-
-#     crew = Crew(
-#         agents=[hr_data_agent, policy_agent],
-#         tasks=[analysis_task, decision_task],
-#         verbose=False,
-#     )
-
-#     return crew.kickoff()
-
 
 def run_leave_crew(employee_name: str) -> str:
     evaluation = evaluate_leave(employee_name)
